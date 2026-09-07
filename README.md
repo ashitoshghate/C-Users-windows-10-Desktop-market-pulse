@@ -29,7 +29,8 @@ market-pulse/
 │   ├── opengraph-image.tsx Generates the social share image
 │   └── api/
 │       ├── contact/route.ts        Contact form submission endpoint
-│       └── generate-image/route.ts AI ad-creative generator endpoint
+│       ├── generate-image/route.ts AI ad-creative generator endpoint
+│       └── chat/route.ts           AI chat widget endpoint
 ├── components/             UI building blocks, one per section
 ├── data/                   Content (services, industries, portfolio,
 │                           testimonials, process, nav, metrics) — kept
@@ -38,7 +39,10 @@ market-pulse/
 ├── lib/
 │   ├── constants.ts        Company details, phone/WhatsApp/Maps links
 │   ├── ai-image.ts         Image-generation provider adapter (OpenAI)
+│   ├── chat.ts             Chat provider adapter (Anthropic Claude)
+│   ├── notify-lead.ts      Fans out contact-form / AI-generator leads to a webhook
 │   └── rate-limit.ts       In-memory per-IP rate limiter
+├── .github/workflows/ci.yml Build check on every push/PR
 └── public/                 Static assets (favicon, etc.)
 ```
 
@@ -83,14 +87,17 @@ to the correct URL.
 Copy `.env.example` to `.env.local` and fill in:
 
 - `NEXT_PUBLIC_SITE_URL` — the live domain (used in metadata, sitemap, OG tags)
-- `CONTACT_WEBHOOK_URL` (optional) — once you wire the contact form
-  (`app/api/contact/route.ts`) up to an email or CRM provider (e.g. Resend,
-  SendGrid, HubSpot), set its webhook/API URL here. Never commit real
-  credentials — the route currently only validates and logs enquiries
-  server-side as a placeholder.
+- `LEAD_WEBHOOK_URL` (optional) — every contact-form submission and every
+  AI ad-generator use is POSTed here as JSON if set (see
+  `lib/notify-lead.ts`). Point it at a Zapier/Make catch hook, a Slack
+  Incoming Webhook, or your own function to fan leads out to email/CRM.
+  Without it, leads are still recorded in the server logs only.
 - `OPENAI_API_KEY` — **required** for the "Generate An Ad Visual With AI"
   section to work. Without it, `/api/generate-image` returns a clean error
   and the rest of the site is unaffected.
+- `ANTHROPIC_API_KEY` — **required** for the chat widget to work. Without
+  it, `/api/chat` returns a clean error and the rest of the site is
+  unaffected.
 
 ## AI ad-creative generator
 
@@ -125,6 +132,51 @@ description, and gets back an AI-generated advertising visual via
 - To change provider later (e.g. Stability AI), only `lib/ai-image.ts`
   needs to change — nothing else in the app calls the provider directly.
 
+## AI chat widget
+
+A floating assistant (`components/ChatWidget.tsx`, bottom-left, so it
+doesn't collide with the WhatsApp button) answers visitor questions via
+`/api/chat`, powered by Claude (`claude-sonnet-5`).
+
+**Setup**
+1. Create an API key at [console.anthropic.com](https://console.anthropic.com).
+2. Set `ANTHROPIC_API_KEY` in `.env.local` (or your hosting provider's
+   environment variables). Read server-side only (`lib/chat.ts`).
+
+**How it stays on-topic and safe to expose publicly**
+- The system prompt (`buildSystemPrompt` in `lib/chat.ts`) is generated
+  from the site's own data files (`data/services.ts`, `data/industries.ts`,
+  `data/process.ts`, `lib/constants.ts`) — so it only knows what's actually
+  on the site, and stays in sync automatically when that content changes.
+- It's explicitly instructed never to guarantee results/rankings, never to
+  invent pricing or testimonials, and to redirect pricing questions to the
+  contact form or phone/WhatsApp.
+- It's instructed to ignore attempts (in a visitor's message) to override
+  its role or reveal the system prompt — treating that text as a normal
+  chat message rather than an instruction.
+- `lib/rate-limit.ts` caps each IP to 30 messages/hour (namespaced
+  `chat:<ip>`, independent of the AI ad-generator's limit).
+- Each message and the conversation history are length-capped
+  server-side regardless of what the client sends.
+
+## Lead notifications
+
+Both the contact form and the AI ad-generator call `notifyLead()`
+(`lib/notify-lead.ts`), which POSTs the lead as JSON to `LEAD_WEBHOOK_URL`
+if it's set — see "Environment variables" above. This is provider-agnostic
+by design: point it at a Zapier or Make "catch webhook" trigger and fan
+the same payload out to email, Slack, a spreadsheet, or a CRM without any
+code changes here. Leads are always also logged server-side regardless of
+whether the webhook is configured.
+
+## Continuous integration / deployment
+
+`.github/workflows/ci.yml` runs `npm run build` on every push and pull
+request to `main`, so a broken build is caught before it merges. Actual
+*deployment* automation comes from AWS Amplify itself once connected (see
+below) — Amplify watches the linked branch and rebuilds/redeploys on every
+push automatically; no separate deploy step or agent is needed for that.
+
 ## Deploying to AWS
 
 Live domain: **marketplusecompony.com**. The site is a standard Next.js
@@ -142,7 +194,8 @@ app, so it fits either of two common AWS paths:
    → Environment variables**:
    - `NEXT_PUBLIC_SITE_URL` = `https://marketplusecompony.com`
    - `OPENAI_API_KEY` = your key (only if the AI ad-generator should be live)
-   - `CONTACT_WEBHOOK_URL` = once a real email/CRM provider is wired up
+   - `ANTHROPIC_API_KEY` = your key (only if the chat widget should be live)
+   - `LEAD_WEBHOOK_URL` = once a real email/CRM/Slack webhook is wired up
 4. Deploy. Amplify gives you a temporary `*.amplifyapp.com` URL first —
    confirm the site loads there before attaching the real domain.
 5. Go to **App settings → Domain management → Add domain**, enter
@@ -195,9 +248,10 @@ none.
 - [ ] Replace placeholder portfolio/testimonials with real, approved content
 - [ ] Add real social media links and business email in `lib/constants.ts`
 - [x] `NEXT_PUBLIC_SITE_URL` set to `https://marketplusecompony.com` as the default
-- [ ] Connect `/api/contact` to a real email/CRM provider
-- [ ] Push repository to GitHub and connect it in AWS Amplify
-- [ ] Set `NEXT_PUBLIC_SITE_URL` (and `OPENAI_API_KEY` / `CONTACT_WEBHOOK_URL` if used) as environment variables in the Amplify app itself — `.env.local` is not deployed
+- [ ] Set `LEAD_WEBHOOK_URL` so contact-form and AI-generator leads reach a real inbox/Slack/CRM instead of only server logs
+- [x] `.github/workflows/ci.yml` runs a build check on every push/PR
+- [ ] Push repository to GitHub and connect it in AWS Amplify (Amplify then auto-deploys on every push — no extra setup needed for that)
+- [ ] Set `NEXT_PUBLIC_SITE_URL`, and `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `LEAD_WEBHOOK_URL` if those features should be live, as environment variables in the Amplify app itself — `.env.local` is not deployed
 - [ ] Attach `marketplusecompony.com` (and `www.`) in Amplify domain management and add the DNS records at your registrar
 - [ ] Confirm HTTPS is active on the custom domain (Amplify/ACM auto-provisions this once DNS is verified)
 - [ ] Re-check Open Graph preview and JSON-LD on the live domain (paste the live URL into a link-preview/OG debugger) once DNS has propagated

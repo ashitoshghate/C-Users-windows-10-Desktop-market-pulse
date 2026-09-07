@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { notifyLead } from "@/lib/notify-lead";
 
 export const runtime = "nodejs";
 
@@ -49,12 +50,8 @@ export async function POST(request: Request) {
 
   const enquiry = { name, company, phone, email, service, budget, message, receivedAt: new Date().toISOString() };
 
-  // NOTE: No email/CRM provider is configured yet. Wire this up to a
-  // transactional email service (e.g. Resend, SendGrid) or CRM webhook
-  // using environment variables — never hardcode credentials here.
-  // Example:
-  //   await fetch(process.env.CONTACT_WEBHOOK_URL!, { method: "POST", body: JSON.stringify(enquiry) });
   console.log("New Market Pulse enquiry:", enquiry);
+  await notifyLead({ source: "contact-form", ...enquiry });
 
   return NextResponse.json({ success: true });
 }

@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { generateAdImage, type AdImageSize } from "@/lib/ai-image";
 import { isRateLimited } from "@/lib/rate-limit";
+import { notifyLead } from "@/lib/notify-lead";
 
 export const runtime = "nodejs";
 
@@ -78,17 +79,9 @@ export async function POST(request: Request) {
     ? `${prompt}. Style: ${styleModifier}. No spelling errors in any on-image text.`
     : `${prompt}. Professional advertising creative. No spelling errors in any on-image text.`;
 
-  // Lead capture — same placeholder pattern as /api/contact. Wire this up to
-  // a real email/CRM provider via an environment variable before launch.
-  console.log("AI ad-generator lead:", {
-    name,
-    email,
-    company,
-    prompt,
-    style,
-    format,
-    receivedAt: new Date().toISOString(),
-  });
+  const lead = { name, email, company, prompt, style, format, receivedAt: new Date().toISOString() };
+  console.log("AI ad-generator lead:", lead);
+  await notifyLead({ source: "ai-generator", ...lead });
 
   try {
     const image = await generateAdImage(fullPrompt, size);
